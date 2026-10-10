@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Suiyi</AssemblyName>
+    <RootNamespace>Suiyi.App</RootNamespace>
+    <Version>0.1.2</Version>
+    <Platforms>AnyCPU;x64</Platforms>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Suiyi.Core/Suiyi.Core.csproj" /></ItemGroup>
+</Project>

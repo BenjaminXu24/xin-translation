@@ -1,0 +1,14 @@
+tools/dotnet/
+tools/dotnet-sdk.zip
+tools/cli-home/
+tools/packages/
+tools/build-appdata/
+tools/dotnet-home/
+tools/releases.json
+tests/artifacts/
+**/bin/
+**/obj/
+artifacts/
+*.user
+*.key
+settings.json
