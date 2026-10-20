@@ -1,11 +1,11 @@
-# Manual WPF smoke. Not part of the required CI on main: it shows a real window
-# and depends on a composited desktop. pull_request is enabled only while this
-# branch is collecting runner evidence; switch the trigger back to
-# workflow_dispatch before relying on it.
+# Manual WPF smoke. Not part of required CI on main.
+# Window.Show(), layout, and screenshots need a composited desktop. This job
+# passed on windows-latest during the investigation (SDK 10.0.402, 17/17),
+# including against a planted remembered key, but a developer VM can still
+# disagree. Run it with the Actions "Run workflow" button when checking the UI.
 name: UI smoke
 
 on:
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -51,80 +51,4 @@ jobs:
             tests/ui-glossary-evidence.png
             tests/ui-long-evidence.png
             tests/ui-min-evidence.png
-          if-no-files-found: warn
-
-  # Temporary: same smoke binary, but with a remembered DPAPI key in LOCALAPPDATA,
-  # matching a machine that has already used 记住密钥. Not a required check.
-  ui-smoke-planted-key:
-    name: UI smoke with planted key
-    runs-on: windows-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up .NET from global.json
-        uses: actions/setup-dotnet@v6
-        with:
-          global-json-file: global.json
-
-      - name: Plant remembered key profile
-        shell: pwsh
-        run: |
-          Add-Type -AssemblyName System.Security
-          # GetFolderPath ignores LOCALAPPDATA on Windows; plant into the folder the app actually reads.
-          $local = [Environment]::GetFolderPath('LocalApplicationData')
-          $root = Join-Path $local 'Suiyi'
-          if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
-          $creds = Join-Path $root 'credentials'
-          New-Item -ItemType Directory -Path $creds -Force | Out-Null
-          $endpoint = 'https://api.openai.com/v1/chat/completions'
-          $uri = [Uri]$endpoint
-          $builder = [UriBuilder]::new($uri)
-          $builder.Scheme = 'https'
-          $builder.Host = $uri.IdnHost.ToLowerInvariant()
-          $builder.Port = -1
-          $normalized = $builder.Uri.AbsoluteUri
-          $sha = [Security.Cryptography.SHA256]::Create()
-          $digest = [Convert]::ToHexString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalized)))
-          $entropy = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("Suiyi.CredentialStore.v1`n$normalized"))
-          $plain = [Text.Encoding]::UTF8.GetBytes('ui-fixture-key-never-real')
-          $protected = [Security.Cryptography.ProtectedData]::Protect($plain, $entropy, 'CurrentUser')
-          [IO.File]::WriteAllBytes((Join-Path $creds "$digest.bin"), $protected)
-          @'
-          {
-            "Endpoint": "https://api.openai.com/v1/chat/completions",
-            "Model": "gpt-4o-mini",
-            "TimeoutSeconds": 45,
-            "Shortcut": "Ctrl+Alt+T",
-            "RememberApiKey": true,
-            "AcceptedServiceEndpoints": []
-          }
-          '@ | Set-Content -LiteralPath (Join-Path $root 'settings.json') -Encoding utf8NoBOM
-          "ROOT=$root" | Set-Content -LiteralPath planted-profile-path.txt
-          "NORMALIZED=$normalized" | Add-Content -LiteralPath planted-profile-path.txt
-          Write-Host "PLANTED root exists=$(Test-Path -LiteralPath (Join-Path $root 'settings.json')) bytes=$((Get-Item -LiteralPath (Join-Path $creds "$digest.bin")).Length)"
-
-      - name: Run UI smoke against planted profile
-        shell: pwsh
-        run: |
-          & pwsh -NoProfile -File ./tests/run-tests.ps1 -UiSmoke *> tests/ui-smoke-console.txt
-          $code = $LASTEXITCODE
-          Get-Content -LiteralPath tests/ui-smoke-console.txt
-          if (Test-Path -LiteralPath planted-profile-path.txt) {
-            $root = (Select-String -LiteralPath planted-profile-path.txt -Pattern '^ROOT=(.*)$').Matches[0].Groups[1].Value
-            if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
-          }
-          exit $code
-
-      - name: Upload planted-key evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ui-smoke-planted-key
-          path: |
-            tests/ui-smoke-results.json
-            tests/ui-smoke-console.txt
-            tests/ui-smoke-hang.txt
-            planted-profile-path.txt
           if-no-files-found: warn
