@@ -52,3 +52,75 @@ jobs:
             tests/ui-long-evidence.png
             tests/ui-min-evidence.png
           if-no-files-found: warn
+
+  # Temporary: same smoke binary, but with a remembered DPAPI key in LOCALAPPDATA,
+  # matching a machine that has already used 记住密钥. Not a required check.
+  ui-smoke-planted-key:
+    name: UI smoke with planted key
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up .NET from global.json
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Plant remembered key profile
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Security
+          $local = Join-Path $env:RUNNER_TEMP 'suiyi-planted-local'
+          $root = Join-Path $local 'Suiyi'
+          $creds = Join-Path $root 'credentials'
+          New-Item -ItemType Directory -Path $creds -Force | Out-Null
+          $endpoint = 'https://api.openai.com/v1/chat/completions'
+          $uri = [Uri]$endpoint
+          $builder = [UriBuilder]::new($uri)
+          $builder.Scheme = 'https'
+          $builder.Host = $uri.IdnHost.ToLowerInvariant()
+          $builder.Port = -1
+          $normalized = $builder.Uri.AbsoluteUri
+          $sha = [Security.Cryptography.SHA256]::Create()
+          $digest = [Convert]::ToHexString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalized)))
+          $entropy = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("Suiyi.CredentialStore.v1`n$normalized"))
+          $plain = [Text.Encoding]::UTF8.GetBytes('ui-fixture-key-never-real')
+          $protected = [Security.Cryptography.ProtectedData]::Protect($plain, $entropy, 'CurrentUser')
+          [IO.File]::WriteAllBytes((Join-Path $creds "$digest.bin"), $protected)
+          @'
+          {
+            "Endpoint": "https://api.openai.com/v1/chat/completions",
+            "Model": "gpt-4o-mini",
+            "TimeoutSeconds": 45,
+            "Shortcut": "Ctrl+Alt+T",
+            "RememberApiKey": true,
+            "AcceptedServiceEndpoints": []
+          }
+          '@ | Set-Content -LiteralPath (Join-Path $root 'settings.json') -Encoding utf8
+          "LOCAL=$local" | Set-Content -LiteralPath planted-profile-path.txt
+          "NORMALIZED=$normalized" | Add-Content -LiteralPath planted-profile-path.txt
+          Write-Host "NORMALIZED=$normalized DIGEST=$digest"
+
+      - name: Run UI smoke against planted profile
+        shell: pwsh
+        run: |
+          $local = (Select-String -LiteralPath planted-profile-path.txt -Pattern '^LOCAL=(.*)$').Matches[0].Groups[1].Value
+          $env:LOCALAPPDATA = $local
+          & pwsh -NoProfile -File ./tests/run-tests.ps1 -UiSmoke *> tests/ui-smoke-console.txt
+          $code = $LASTEXITCODE
+          Get-Content -LiteralPath tests/ui-smoke-console.txt
+          exit $code
+
+      - name: Upload planted-key evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-smoke-planted-key
+          path: |
+            tests/ui-smoke-results.json
+            tests/ui-smoke-console.txt
+            tests/ui-smoke-hang.txt
+            planted-profile-path.txt
+          if-no-files-found: warn
