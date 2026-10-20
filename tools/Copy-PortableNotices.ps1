@@ -13,7 +13,19 @@ Copy-Item -LiteralPath (Join-Path $packages "microsoft.windowsdesktop.app.runtim
 $sdkVersion = (Get-Content -LiteralPath (Join-Path $projectRoot 'global.json') -Raw | ConvertFrom-Json).sdk.version
 $desktopNotices = Join-Path $projectRoot "tools\dotnet\sdk\$sdkVersion\Sdks\Microsoft.NET.Sdk.WindowsDesktop\THIRD-PARTY-NOTICES.TXT"
 if (-not (Test-Path -LiteralPath $desktopNotices)) {
-    $sdkRoot = (& dotnet --list-sdks | Where-Object {$_ -match "^$([regex]::Escape($sdkVersion)) "} | Select-Object -First 1) -replace '^.*\[([^\]]+)\]$', '$1'
+    $listed = @( & dotnet --list-sdks )
+    $match = $listed | Where-Object { $_ -match "^$([regex]::Escape($sdkVersion)) " } | Select-Object -First 1
+    if (-not $match) {
+        # global.json rollForward may select a newer patch than sdk.version.
+        Push-Location -LiteralPath $projectRoot
+        try { $active = (& dotnet --version).Trim() }
+        finally { Pop-Location }
+        $match = $listed | Where-Object { $_ -match "^$([regex]::Escape($active)) " } | Select-Object -First 1
+        if ($match) { $sdkVersion = $active }
+    }
+    if (-not $match) { throw "Windows Desktop third-party notices were not found for SDK $sdkVersion." }
+    $sdkRoot = ([string]$match) -replace '^.*\[([^\]]+)\]$', '$1'
     $desktopNotices = Join-Path $sdkRoot "$sdkVersion\Sdks\Microsoft.NET.Sdk.WindowsDesktop\THIRD-PARTY-NOTICES.TXT"
 }
+if (-not (Test-Path -LiteralPath $desktopNotices)) { throw "Missing Windows Desktop third-party notices: $desktopNotices" }
 Copy-Item -LiteralPath $desktopNotices -Destination (Join-Path $licenses 'WindowsDesktop-ThirdPartyNotices.txt')
