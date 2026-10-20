@@ -98,7 +98,7 @@ internal static class UiSmoke
             await RenderAsync(window);
             SaveScreenshot(window, Path.Combine(evidenceDirectory, "ui-evidence.png"));
         });
-        await CheckAsync("真实设置窗口：默认接口、协议与空密钥提示布局", async () =>
+        await CheckAsync("真实设置窗口：默认接口、协议、空密钥与记住密钥默认未勾选", async () =>
         {
             var settingsWindow = new SettingsWindow(new AppSettings(), "") { Owner = window };
             try
@@ -108,7 +108,8 @@ internal static class UiSmoke
                 Equal(14d, settingsWindow.FontSize);
                 Assert(Descendants<PasswordBox>(settingsWindow).Single().Password.Length == 0);
                 Assert(Descendants<TextBlock>(settingsWindow).Any(block => block.Text.Contains("Chat Completions", StringComparison.Ordinal)));
-                Assert(Descendants<TextBlock>(settingsWindow).Any(block => block.Text.Contains("首版不提供记住密钥", StringComparison.Ordinal)));
+                var rememberKey = Descendants<CheckBox>(settingsWindow).Single(box => (string?)box.Content == "记住 API Key（仅当前 Windows 用户）");
+                Assert(rememberKey.IsChecked == false);
                 SaveScreenshot(settingsWindow, Path.Combine(evidenceDirectory, "ui-settings-evidence.png"));
             }
             finally { settingsWindow.Close(); }
