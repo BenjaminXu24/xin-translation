@@ -72,8 +72,10 @@ jobs:
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.Security
-          $local = Join-Path $env:RUNNER_TEMP 'suiyi-planted-local'
+          # GetFolderPath ignores LOCALAPPDATA on Windows; plant into the folder the app actually reads.
+          $local = [Environment]::GetFolderPath('LocalApplicationData')
           $root = Join-Path $local 'Suiyi'
+          if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
           $creds = Join-Path $root 'credentials'
           New-Item -ItemType Directory -Path $creds -Force | Out-Null
           $endpoint = 'https://api.openai.com/v1/chat/completions'
@@ -98,19 +100,21 @@ jobs:
             "RememberApiKey": true,
             "AcceptedServiceEndpoints": []
           }
-          '@ | Set-Content -LiteralPath (Join-Path $root 'settings.json') -Encoding utf8
-          "LOCAL=$local" | Set-Content -LiteralPath planted-profile-path.txt
+          '@ | Set-Content -LiteralPath (Join-Path $root 'settings.json') -Encoding utf8NoBOM
+          "ROOT=$root" | Set-Content -LiteralPath planted-profile-path.txt
           "NORMALIZED=$normalized" | Add-Content -LiteralPath planted-profile-path.txt
-          Write-Host "NORMALIZED=$normalized DIGEST=$digest"
+          Write-Host "PLANTED root exists=$(Test-Path -LiteralPath (Join-Path $root 'settings.json')) bytes=$((Get-Item -LiteralPath (Join-Path $creds "$digest.bin")).Length)"
 
       - name: Run UI smoke against planted profile
         shell: pwsh
         run: |
-          $local = (Select-String -LiteralPath planted-profile-path.txt -Pattern '^LOCAL=(.*)$').Matches[0].Groups[1].Value
-          $env:LOCALAPPDATA = $local
           & pwsh -NoProfile -File ./tests/run-tests.ps1 -UiSmoke *> tests/ui-smoke-console.txt
           $code = $LASTEXITCODE
           Get-Content -LiteralPath tests/ui-smoke-console.txt
+          if (Test-Path -LiteralPath planted-profile-path.txt) {
+            $root = (Select-String -LiteralPath planted-profile-path.txt -Pattern '^ROOT=(.*)$').Matches[0].Groups[1].Value
+            if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+          }
           exit $code
 
       - name: Upload planted-key evidence

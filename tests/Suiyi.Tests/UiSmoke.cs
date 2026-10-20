@@ -40,6 +40,8 @@ internal static class UiSmoke
             app = new Suiyi.App.App();
             app.InitializeComponent();
             window = new MainWindow();
+            var loaded = (AppSettings)GetField(window, "settings");
+            Console.WriteLine($"UI LOADED remember={loaded.RememberApiKey} modelLen={loaded.Model.Length} keyLen={((string)GetField(window, "apiKey")).Length} settingsFile={File.Exists(SettingsStore.FilePath)}");
             // Avoid the user's saved endpoint/shortcut; do not invoke settings persistence.
             SetField(window, "settings", new AppSettings { Shortcut = "Ctrl+Alt+Shift+F22" });
             app.MainWindow = window;
