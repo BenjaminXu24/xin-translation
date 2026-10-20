@@ -23,6 +23,7 @@ internal static class UiSmoke
     private static readonly List<CheckResult> Checks = [];
     private static int exitCode = 1;
     private static string evidenceDirectory = "";
+    private static string? fixtureRoot;
     private static MainWindow? activeWindow;
 
     public static int Run()
@@ -39,11 +40,8 @@ internal static class UiSmoke
         {
             app = new Suiyi.App.App();
             app.InitializeComponent();
-            window = new MainWindow();
-            var loaded = (AppSettings)GetField(window, "settings");
-            Console.WriteLine($"UI LOADED remember={loaded.RememberApiKey} modelLen={loaded.Model.Length} keyLen={((string)GetField(window, "apiKey")).Length} settingsFile={File.Exists(SettingsStore.FilePath)}");
-            // Avoid the user's saved endpoint/shortcut; do not invoke settings persistence.
-            SetField(window, "settings", new AppSettings { Shortcut = "Ctrl+Alt+Shift+F22" });
+            // Fixture directory: never read the signed-in user's settings.json or DPAPI key.
+            window = CreateFixtureWindow();
             app.MainWindow = window;
             window.Show();
             dispatcher.BeginInvoke(new Action(async () =>
@@ -73,9 +71,31 @@ internal static class UiSmoke
             SaveResults();
             try { if (window is not null) Invoke(window, "ExitApp"); else app?.Shutdown(); } catch { }
         }
-        finally { watchdog.Cancel(); }
+        finally { watchdog.Cancel(); DeleteFixture(); }
         Console.WriteLine($"UI RESULT total={Checks.Count} passed={Checks.Count(check => check.Success)} failed={Checks.Count(check => !check.Success)}");
         return exitCode;
+    }
+
+    private static MainWindow CreateFixtureWindow()
+    {
+        fixtureRoot = Path.Combine(Path.GetTempPath(), "suiyi-ui-smoke-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(fixtureRoot);
+        var settings = new AppSettings { Shortcut = "Ctrl+Alt+Shift+F22" };
+        var credentials = new CredentialStore(Path.Combine(fixtureRoot, "credentials"));
+        return new MainWindow(settings, credentials, Path.Combine(fixtureRoot, "settings.json"),
+            (_, _) => false,
+            _ => throw new InvalidOperationException("界面冒烟必须停留在模拟模式，不能创建在线翻译服务。"));
+    }
+
+    private static void DeleteFixture()
+    {
+        if (fixtureRoot is null) return;
+        var root = Path.GetFullPath(fixtureRoot);
+        var temp = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()));
+        if (!string.Equals(Path.GetDirectoryName(root), temp, StringComparison.OrdinalIgnoreCase)) return;
+        if (!Path.GetFileName(root).StartsWith("suiyi-ui-smoke-", StringComparison.Ordinal)) return;
+        try { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        catch { /* The smoke result is already recorded. */ }
     }
 
     private static async Task ExerciseAsync(MainWindow window)
