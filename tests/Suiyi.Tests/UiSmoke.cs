@@ -9,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Suiyi.App;
+using Suiyi.App.Platform;
 using Suiyi.Core;
 
 namespace Suiyi.Tests;
