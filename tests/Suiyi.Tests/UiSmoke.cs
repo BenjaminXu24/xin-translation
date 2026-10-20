@@ -1,5 +1,6 @@
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -8,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Suiyi.App;
+using Suiyi.App.Platform;
 using Suiyi.Core;
 
 namespace Suiyi.Tests;
@@ -22,11 +24,16 @@ internal static class UiSmoke
     private static readonly List<CheckResult> Checks = [];
     private static int exitCode = 1;
     private static string evidenceDirectory = "";
+    private static string? fixtureRoot;
+    private static MainWindow? activeWindow;
 
     public static int Run()
     {
         evidenceDirectory = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "tests"));
         Directory.CreateDirectory(evidenceDirectory);
+        using var watchdog = new CancellationTokenSource();
+        StartWatchdog(watchdog.Token);
+        Console.WriteLine($"UI ENV wpf={typeof(Window).Assembly.GetName().Version} interactive={Environment.UserInteractive} session={SessionId()}");
         var dispatcher = Dispatcher.CurrentDispatcher;
         Suiyi.App.App? app = null;
         MainWindow? window = null;
@@ -34,9 +41,8 @@ internal static class UiSmoke
         {
             app = new Suiyi.App.App();
             app.InitializeComponent();
-            window = new MainWindow();
-            // Avoid the user's saved endpoint/shortcut; do not invoke settings persistence.
-            SetField(window, "settings", new AppSettings { Shortcut = "Ctrl+Alt+Shift+F22" });
+            // Fixture directory: never read the signed-in user's settings.json or DPAPI key.
+            window = CreateFixtureWindow();
             app.MainWindow = window;
             window.Show();
             dispatcher.BeginInvoke(new Action(async () =>
@@ -48,7 +54,7 @@ internal static class UiSmoke
                 }
                 catch (Exception ex)
                 {
-                    Checks.Add(new("UI harness", false, ex.GetType().Name + ": " + ex.Message));
+                    Checks.Add(new("UI harness", false, Describe(ex)));
                 }
                 finally
                 {
@@ -62,23 +68,51 @@ internal static class UiSmoke
         }
         catch (Exception ex)
         {
-            Checks.Add(new("WPF 初始化", false, ex.GetType().Name + ": " + ex.Message));
+            Checks.Add(new("WPF 初始化", false, Describe(ex) + " | " + Probe(window)));
             SaveResults();
             try { if (window is not null) Invoke(window, "ExitApp"); else app?.Shutdown(); } catch { }
         }
+        finally { watchdog.Cancel(); DeleteFixture(); }
         Console.WriteLine($"UI RESULT total={Checks.Count} passed={Checks.Count(check => check.Success)} failed={Checks.Count(check => !check.Success)}");
         return exitCode;
     }
 
+    private static MainWindow CreateFixtureWindow()
+    {
+        fixtureRoot = Path.Combine(Path.GetTempPath(), "suiyi-ui-smoke-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(fixtureRoot);
+        var settings = new AppSettings { Shortcut = "Ctrl+Alt+Shift+F22" };
+        var credentials = new CredentialStore(Path.Combine(fixtureRoot, "credentials"));
+        return new MainWindow(settings, credentials, Path.Combine(fixtureRoot, "settings.json"),
+            (_, _) => false,
+            _ => throw new InvalidOperationException("界面冒烟必须停留在模拟模式，不能创建在线翻译服务。"));
+    }
+
+    private static void DeleteFixture()
+    {
+        if (fixtureRoot is null) return;
+        var root = Path.GetFullPath(fixtureRoot);
+        var temp = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()));
+        if (!string.Equals(Path.GetDirectoryName(root), temp, StringComparison.OrdinalIgnoreCase)) return;
+        if (!Path.GetFileName(root).StartsWith("suiyi-ui-smoke-", StringComparison.Ordinal)) return;
+        try { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        catch { /* The smoke result is already recorded. */ }
+    }
+
     private static async Task ExerciseAsync(MainWindow window)
     {
+        activeWindow = window;
         await Task.Delay(120);
         await CheckAsync("真实 WPF 窗口与模拟模式可见", () =>
         {
-            Assert(window.IsVisible && window.IsLoaded && window.ActualWidth >= 600 && window.ActualHeight >= 620);
+            Console.WriteLine("UI PROBE " + Probe(window));
+            Assert(window.IsVisible, "主窗口 IsVisible");
+            Assert(window.IsLoaded, "主窗口 IsLoaded");
+            Assert(window.ActualWidth >= 600, $"ActualWidth={window.ActualWidth}");
+            Assert(window.ActualHeight >= 620, $"ActualHeight={window.ActualHeight}");
             Equal(14d, window.FontSize); Equal("Microsoft YaHei UI", window.FontFamily.Source);
-            Contains(Find<TextBlock>(window, "ModeText").Text, "模拟模式");
-            Assert((string)GetField(window, "apiKey") == "");
+            Assert(Find<TextBlock>(window, "ModeText").Text.Contains("模拟模式", StringComparison.Ordinal), "ModeText 不含模拟模式");
+            Assert(((string)GetField(window, "apiKey")).Length == 0, "apiKey 非空");
             return Task.CompletedTask;
         });
         await CheckAsync("英文付款样例：金额、订单、姓名与中文结果", async () =>
@@ -182,9 +216,9 @@ internal static class UiSmoke
         await CheckAsync("关闭收回托盘：取消请求，重新显示后没有迟到结果", async () =>
         {
             Input(window, EnglishPayment); var pending = TranslationTask(window);
-            await Task.Delay(70); window.Close(); Assert(!window.IsVisible);
-            await pending; await Task.Delay(550); Assert(Body(window).Length == 0);
-            Invoke(window, "ShowFromTray"); await RenderAsync(window); Assert(window.IsVisible);
+            await Task.Delay(70); window.Close(); Assert(!window.IsVisible, "关闭后仍可见");
+            await pending; await Task.Delay(550); Assert(Body(window).Length == 0, $"关闭后正文长度={Body(window).Length}");
+            Invoke(window, "ShowFromTray"); await RenderAsync(window); Assert(window.IsVisible, "ShowFromTray 后不可见");
         });
         await CheckAsync("重试按钮事件重新完成模拟请求", async () =>
         {
@@ -209,11 +243,14 @@ internal static class UiSmoke
             for (int i = 0; i < panel.Children.Count; i++)
             {
                 var card = (StackPanel)panel.Children[i]; var box = (TextBox)card.Children[1];
-                Equal(paragraphs[i], box.Text); Assert(box.IsReadOnly && box.TextWrapping == TextWrapping.Wrap && box.ActualWidth > 0);
-                Assert(Descendants<Button>(card).Any(button => (string?)button.Content == "复制此段"));
+                Equal(paragraphs[i], box.Text);
+                Assert(box.IsReadOnly, "分段框不可只读");
+                Assert(box.TextWrapping == TextWrapping.Wrap, "分段框未换行");
+                Assert(box.ActualWidth > 0, $"分段框宽度={box.ActualWidth}");
+                Assert(Descendants<Button>(card).Any(button => (string?)button.Content == "复制此段"), "缺少复制此段");
             }
             Contains(Find<TextBlock>(window, "ResultTitle").Text, "3 段");
-            Assert(Descendants<ScrollViewer>(window).Any(scroll => scroll.ScrollableHeight > 0));
+            Assert(Descendants<ScrollViewer>(window).Any(scroll => scroll.ScrollableHeight > 0), "结果区不可滚动");
             SaveScreenshot(window, Path.Combine(evidenceDirectory, "ui-long-evidence.png"));
         });
         await CheckAsync("主窗口最小尺寸：结果区可滚动且保留完整正文", async () =>
@@ -221,8 +258,9 @@ internal static class UiSmoke
             window.Width = window.MinWidth; window.Height = window.MinHeight; await RenderAsync(window);
             Equal(600d, window.ActualWidth); Equal(620d, window.ActualHeight);
             var scroll = Ancestor<ScrollViewer>(Find<StackPanel>(window, "SegmentsPanel"));
-            Assert(scroll.ViewportHeight > 20 && scroll.ScrollableHeight > 0);
-            scroll.ScrollToEnd(); await RenderAsync(window); Assert(scroll.VerticalOffset > 0);
+            Assert(scroll.ViewportHeight > 20, $"ViewportHeight={scroll.ViewportHeight}");
+            Assert(scroll.ScrollableHeight > 0, $"ScrollableHeight={scroll.ScrollableHeight}");
+            scroll.ScrollToEnd(); await RenderAsync(window); Assert(scroll.VerticalOffset > 0, $"VerticalOffset={scroll.VerticalOffset}");
             Assert(Find<StackPanel>(window, "SegmentsPanel").Children.Count == 3);
             SaveScreenshot(window, Path.Combine(evidenceDirectory, "ui-min-evidence.png"));
             window.Width = 700; window.Height = 790; await RenderAsync(window);
@@ -246,7 +284,12 @@ internal static class UiSmoke
     private static async Task CheckAsync(string name, Func<Task> action)
     {
         try { await action(); Checks.Add(new(name, true, "")); Console.WriteLine("UI PASS " + name); }
-        catch (Exception ex) { Checks.Add(new(name, false, ex.GetType().Name + ": " + ex.Message)); Console.WriteLine("UI FAIL " + name + ": " + ex.Message); }
+        catch (Exception ex)
+        {
+            var detail = Describe(ex) + " | " + Probe(activeWindow);
+            Checks.Add(new(name, false, detail));
+            Console.WriteLine("UI FAIL " + name + ": " + detail);
+        }
     }
     private static void Input(MainWindow window, string text, int target = 0)
     {
@@ -300,8 +343,73 @@ internal static class UiSmoke
     private static void SetField(MainWindow window, string name, object value) => typeof(MainWindow).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, value);
     private static object? Invoke(MainWindow window, string name, params object[] args) => typeof(MainWindow).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, args);
     private static void SaveResults() => File.WriteAllText(Path.Combine(evidenceDirectory, "ui-smoke-results.json"), JsonSerializer.Serialize(new { mode = "in-process WPF fixture smoke test", realApi = false, realClipboard = false, realImeInput = false, checks = Checks }, new JsonSerializerOptions { WriteIndented = true }));
-    private static void Assert(bool value) { if (!value) throw new InvalidOperationException("UI 断言应为 true"); }
-    private static void Contains(string text, string part) => Assert(text.Contains(part, StringComparison.Ordinal));
-    private static void Equal<T>(T expected, T actual) => Assert(EqualityComparer<T>.Default.Equals(expected, actual));
+    private static void Assert(bool value, string? detail = null)
+    {
+        if (!value) throw new InvalidOperationException(detail is null ? "UI 断言应为 true" : "UI 断言应为 true: " + detail);
+    }
+    private static void Contains(string text, string part)
+    {
+        if (text.Contains(part, StringComparison.Ordinal)) return;
+        throw new InvalidOperationException($"UI 断言应为 true: 缺少「{Truncate(part)}」，正文长度 {text.Length}，开头「{Truncate(text)}」");
+    }
+    private static void Equal<T>(T expected, T actual)
+    {
+        if (EqualityComparer<T>.Default.Equals(expected, actual)) return;
+        throw new InvalidOperationException($"UI 断言应为 true: 期望「{expected}」，实际「{actual}」");
+    }
+    private static string Truncate(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        var flat = text.Replace("\r", " ").Replace("\n", " ");
+        return flat.Length > 80 ? flat[..80] + "…" : flat;
+    }
+    private static string Describe(Exception ex)
+    {
+        var text = ex.GetType().Name + ": " + ex.Message;
+        for (var inner = ex.InnerException; inner is not null; inner = inner.InnerException)
+            text += " | " + inner.GetType().Name + ": " + inner.Message + " @ " + FirstFrame(inner);
+        return text;
+    }
+    private static string FirstFrame(Exception ex)
+    {
+        var frame = ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim() ?? "";
+        return frame.Length > 220 ? frame[..220] : frame;
+    }
+    private static string Probe(MainWindow? window)
+    {
+        if (window is null) return "window=null";
+        string modeKind;
+        try
+        {
+            var mode = Find<TextBlock>(window, "ModeText").Text;
+            modeKind = mode.Contains("模拟模式", StringComparison.Ordinal) ? "mock" : mode.Contains("API 模式", StringComparison.Ordinal) ? "api" : "other";
+        }
+        catch { modeKind = "missing"; }
+        var status = "";
+        try { status = Truncate(Find<TextBlock>(window, "StatusText").Text); } catch { }
+        var keyLen = -1;
+        try { keyLen = ((string)GetField(window, "apiKey")).Length; } catch { }
+        return $"visible={window.IsVisible} loaded={window.IsLoaded} active={window.IsActive} state={window.WindowState} visibility={window.Visibility} actual={window.ActualWidth:0.##}x{window.ActualHeight:0.##} box={window.Width:0.##}x{window.Height:0.##} font={window.FontSize}/{window.FontFamily?.Source} keyLen={keyLen} mode={modeKind} status={status} screen={SystemParameters.PrimaryScreenWidth:0}x{SystemParameters.PrimaryScreenHeight:0} interactive={Environment.UserInteractive} session={SessionId()}";
+    }
+    private static void StartWatchdog(CancellationToken token)
+    {
+        _ = Task.Run(async () =>
+        {
+            try { await Task.Delay(TimeSpan.FromMinutes(3), token); }
+            catch (OperationCanceledException) { return; }
+            try { File.WriteAllText(Path.Combine(evidenceDirectory, "ui-smoke-hang.txt"), "UiSmoke did not finish within 3 minutes."); } catch { }
+            Environment.Exit(3);
+        });
+    }
+    private static uint SessionId()
+    {
+        try
+        {
+            return ProcessIdToSessionId((uint)Environment.ProcessId, out uint id) ? id : uint.MaxValue;
+        }
+        catch { return uint.MaxValue; }
+    }
+    [DllImport("kernel32.dll")]
+    private static extern bool ProcessIdToSessionId(uint dwProcessId, out uint pSessionId);
     private sealed record CheckResult(string Name, bool Success, string Details);
 }

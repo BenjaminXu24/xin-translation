@@ -1,0 +1,54 @@
+# Manual WPF smoke. Not part of required CI on main.
+# Window.Show(), layout, and screenshots need a composited desktop. This job
+# passed on windows-latest during the investigation (SDK 10.0.402, 17/17),
+# including against a planted remembered key, but a developer VM can still
+# disagree. Run it with the Actions "Run workflow" button when checking the UI.
+name: UI smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ui-smoke:
+    name: Windows UI smoke
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up .NET from global.json
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Record SDK
+        shell: pwsh
+        run: dotnet --info | Select-Object -First 20
+
+      - name: Run UI smoke
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File ./tests/run-tests.ps1 -UiSmoke *> tests/ui-smoke-console.txt
+          $code = $LASTEXITCODE
+          Get-Content -LiteralPath tests/ui-smoke-console.txt
+          exit $code
+
+      - name: Upload UI smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-smoke-evidence
+          path: |
+            tests/ui-smoke-results.json
+            tests/ui-smoke-console.txt
+            tests/ui-smoke-hang.txt
+            tests/ui-evidence.png
+            tests/ui-settings-evidence.png
+            tests/ui-glossary-evidence.png
+            tests/ui-long-evidence.png
+            tests/ui-min-evidence.png
+          if-no-files-found: warn
