@@ -66,7 +66,7 @@ HTTP 400 / 422 的错误响应最多读取 8 KiB，只在内存中匹配已知�
 
 `src/Suiyi.App`：WPF 窗口、设置、托盘、快捷键、手动剪贴板操作，以及可选的当前用户 DPAPI 密钥存储。
 
-`tests/Suiyi.Tests`：无第三方测试包的断言程序。`docs/需求与计划.md` 和 `docs/测试记录.md` 记录范围与验收结果。
+`tests/Suiyi.Tests`：无第三方测试包的断言程序。`docs/需求与计划.md` 和 `docs/测试记录.md` 记录范围与验收结果。交接说明见 [HANDOVER.md](HANDOVER.md)。
 
 使用 [微软官方 .NET 10 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)，当前项目内便携 SDK 是 10.0.401，下载后已核验官方 SHA512。源码包不包含 SDK。可用 `tools/Get-DotNetSdk.ps1` 获取并校验固定版本，它会拒绝覆盖已存在的 SDK 目录。若已安装该 SDK，在普通 PowerShell 中运行：
 
